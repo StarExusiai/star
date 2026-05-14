@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>星际穿梭 - 小行星躲避</title>
+    <style>
+        :root {
+            --bg: #0a0a14;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            cursor: default;
+        }
+
+        .game-wrapper {
+            position: relative;
+            width: min(95vw, 480px);
+            height: auto;
+            aspect-ratio: 480 / 750;
+            max-height: 95vh;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow:
+                0 0 40px rgba(80, 140, 255, 0.25),
+                0 0 80px rgba(80, 140, 255, 0.12),
+                0 20px 60px rgba(0, 0, 0, 0.5);
+            transition: box-shadow 0.3s;
+        }
+
+        .game-wrapper.playing {
+            box-shadow:
+                0 0 60px rgba(80, 180, 255, 0.35),
+                0 0 120px rgba(80, 140, 255, 0.18),
+                0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .game-wrapper.danger {
+            box-shadow:
+                0 0 70px rgba(255, 70, 70, 0.45),
+                0 0 130px rgba(255, 40, 40, 0.2),
+                0 20px 60px rgba(0, 0, 0, 0.5);
+            animation: dangerPulse 0.3s ease-out;
+        }
+
+        @keyframes dangerPulse {
+            0%,
+            100% {
+                transform: translateX(0);
+            }
+            25% {
+                transform: translateX(-4px);
+            }
+            50% {
+                transform: translateX(4px);
+            }
+            75% {
+                transform: translateX(-3px);
+            }
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-wrapper" id="wrapper">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            const wrapper = document.getElementById('wrapper');
+
+            // 内部分辨率
+            const W = 480;
+            const H = 750;
+            canvas.width = W;
+            canvas.height = H;
+
+            // ==================== 游戏状态 ====================
+            const STATE = { MENU: 'menu', PLAYING: 'playing', GAMEOVER: 'gameover' };
+            let gameState = STATE.MENU;
+            let score = 0;
+            let level = 1;
+            let lives = 3;
+            let combo = 0;
+            let comboTimer = 0;
+            let maxCombo = 0;
+            let energy = 0;
+            const MAX_ENERGY = 100;
+            let highScore = parseInt(localStorage.getItem('asteroidDodgeHighScore')) || 0;
+            let shakeAmount = 0;
+            let shakeDuration = 0;
+
+            // ==================== 玩家 ====================
+            const player = {
+                x: W / 2,
+                y: 620,
+                width: 36,
+                height: 48,
+                collisionRadius: 14,
+                speed: 420,
+                invincible: false,
+                invincibleTimer: 0,
+                invincibleDuration: 2.0,
+                targetX: W / 2,
+                visible: true,
+                flickerTimer: 0,
+            };
+
+            // ==================== 对象池 ====================
+            let meteors = [];
+            let goldenStars = [];
+            let particles = [];
+            let floatingTexts = [];
+            let shockwave = null;
+            let bgStars = [];
+
+            // ==================== 计时器 ====================
+            let meteorSpawnTimer = 0;
+            let meteorSpawnInterval = 0.9;
+            let starSpawnTimer = 0;
+            let starSpawnInterval = 16;
+            let gameTime = 0;
+            let difficultyScore = 0;
+
+            // ==================== 输入状态 ====================
+            const keys = {};
+            let mouseX = W / 2;
+            let mouseOnCanvas = false;
+            let touchActive = false;
+            let touchX = W / 2;
+            const skillBtn = { x: W - 65, y: H - 75, radius: 30, pressed: false };
+
+            // ==================== 初始化背景星星 ====================
+            function initBgStars() {
+                bgStars = [];
+                for (let i = 0; i < 120; i++) {
+                    bgStars.push({
+                        x: Math.random() * W,
+                        y: Math.random() * H,
+                        radius: Math.random() * 1.8 + 0.4,
+                        speed: Math.random() * 50 + 20,
+                        twinkle: Math.random() * Math.PI * 2,
+                        twinkleSpeed: Math.random() * 3 + 1.5,
+                        brightness: Math.random() * 0.5 + 0.5,
+                    });
+                }
+            }
+
+            // ==================== 重置游戏 ====================
+            function resetGame() {
+                score = 0;
+                level = 1;
+                lives = 3;
+                combo = 0;
+                comboTimer = 0;
+                maxCombo = 0;
+                energy = 0;
+                gameTime = 0;
+                difficultyScore = 0;
+                player.x = W / 2;
+                player.y = 620;
+                player.targetX = W / 2;
+                player.invincible = false;
+                player.invincibleTimer = 0;
+                player.visible = true;
+                player.flickerTimer = 0;
+                meteors = [];
+                goldenStars = [];
+                particles = [];
+                floatingTexts = [];
+                shockwave = null;
+                meteorSpawnTimer = 0;
+                meteorSpawnInterval = 0.9;
+                starSpawnTimer = 0;
+                starSpawnInterval = 16;
+                shakeAmount = 0;
+                shakeDuration = 0;
+                wrapper.classList.remove('playing', 'danger');
+            }
+
+            // ==================== 粒子系统 ====================
+            function spawnParticles(x, y, count, colorBase, options = {}) {
+                const {
+                    speedMin = 60, speedMax = 250, lifeMin = 0.3, lifeMax = 0.9,
+                    sizeMin = 1.5, sizeMax = 4.5, gravity = 0
+                } = options;
+                for (let i = 0; i < count; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = speedMin + Math.random() * (speedMax - speedMin);
+                    const life = lifeMin + Math.random() * (lifeMax - lifeMin);
+                    const hueShift = (Math.random() - 0.5) * 30;
+                    particles.push({
+                        x: x,
+                        y: y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: life,
+                        maxLife: life,
+                        size: sizeMin + Math.random() * (sizeMax - sizeMin),
+                        color: colorBase,
+                        hueShift: hueShift,
+                        gravity: gravity,
+                    });
+                }
+            }
+
+            function spawnFloatingText(x, y, text, color = '#ffffff', fontSize = 22) {
+                floatingTexts.push({
+                    x,
+                    y,
+                    text,
+                    life: 1.1,
+                    maxLife: 1.1,
+                    color,
+                    fontSize,
+                    vy: -90,
+                });
+            }
+
+            function triggerShockwave(x, y) {
+                shockwave = {
+                    x,
+                    y,
+                    radius: 10,
+                    maxRadius: 350,
+                    alpha: 1.0,
+                    duration: 0.55,
+                    elapsed: 0,
+                };
+            }
+
+            // ==================== 生成陨石 ====================
+            function spawnMeteor() {
+                const baseSpeed = 200 + level * 22;
+                const speedY = baseSpeed + (Math.random() - 0.5) * 100;
+                const speedX = (Math.random() - 0.5) * 50;
+                const radius = 16 + Math.random() * 28;
+                const x = radius + Math.random() * (W - radius * 2);
+                const y = -radius * 2 - Math.random() * 80;
+                const hue = Math.random() < 0.7 ?
+                    (Math.random() * 20 + 5) :
+                    (Math.random() * 30 + 340);
+                const saturation = 60 + Math.random() * 30;
+                const lightness = 40 + Math.random() * 25;
+                const color = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+                const glowColor = `hsl(${hue}, ${saturation + 10}%, ${lightness + 20}%)`;
+
+                // 生成不规则形状点
+                const bumps = 5 + Math.floor(Math.random() * 8);
+                const shapePoints = [];
+                for (let i = 0; i < bumps; i++) {
+                    const a = (i / bumps) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+                    const r = radius * (0.72 + Math.random() * 0.56);
+                    shapePoints.push({ angle: a, radius: r });
+                }
+                shapePoints.sort((a, b) => a.angle - b.angle);
+
+                meteors.push({
+                    x,
+                    y,
+                    radius,
+                    speedY,
+                    speedX,
+                    color,
+                    glowColor,
+                    shapePoints,
+                    rotation: Math.random() * Math.PI * 2,
+                    rotSpeed: (Math.random() - 0.5) * 2.5,
+                    passed: false,
+                });
+            }
+
+            // ==================== 生成金色星星 ====================
+            function spawnGoldenStar() {
+                const x = 40 + Math.random() * (W - 80);
+                const y = -50;
+                const radius = 14 + Math.random() * 10;
+                goldenStars.push({
+                    x,
+                    y,
+                    radius,
+                    speedY: 80 + Math.random() * 50,
+                    swingAmp: 30 + Math.random() * 40,
+                    swingSpeed: 1.5 + Math.random() * 2,
+                    swingOffset: Math.random() * Math.PI * 2,
+                    glowPulse: Math.random() * Math.PI * 2,
+                });
+            }
+
+            // ==================== 碰撞检测 ====================
+            function circlesCollide(x1, y1, r1, x2, y2, r2) {
+                const dx = x1 - x2;
+                const dy = y1 - y2;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                return dist < (r1 + r2);
+            }
+
+            // ==================== 清屏技能 ====================
+            function activateShockwave() {
+                if (energy < MAX_ENERGY) return;
+                energy = 0;
+                triggerShockwave(player.x, player.y);
+                spawnParticles(player.x, player.y, 40, '#ffffff', {
+                    speedMin: 100,
+                    speedMax: 400,
+                    lifeMin: 0.4,
+                    lifeMax: 1.0,
+                    sizeMin: 2,
+                    sizeMax: 7
+                });
+                // 清除所有陨石
+                meteors.forEach(m => {
+                    combo += 2;
+                    spawnParticles(m.x, m.y, 12, m.glowColor, {
+                        speedMin: 40,
+                        speedMax: 200,
+                        lifeMin: 0.2,
+                        lifeMax: 0.6,
+                        sizeMin: 1,
+                        sizeMax: 4
+                    });
+                });
+                if (meteors.length > 0) {
+                    spawnFloatingText(player.x, player.y - 30, '💥 清屏!', '#ffdd57', 26);
+                }
+                meteors = [];
+                comboTimer = 3.0;
+                if (combo > maxCombo) maxCombo = combo;
+            }
+
+            // ==================== 玩家受伤 ====================
+            function playerHit(meteor) {
+                if (player.invincible) return;
+                lives--;
+                player.invincible = true;
+                player.invincibleTimer = player.invincibleDuration;
+                player.flickerTimer = 0;
+                combo = 0;
+                comboTimer = 0;
+                shakeAmount = 12;
+                shakeDuration = 0.35;
+                wrapper.classList.add('danger');
+                setTimeout(() => wrapper.classList.remove('danger'), 350);
+                spawnParticles(player.x, player.y, 30, '#ff4444', {
+                    speedMin: 80,
+                    speedMax: 350,
+                    lifeMin: 0.3,
+                    lifeMax: 0.8,
+                    sizeMin: 2,
+                    sizeMax: 6
+                });
+                spawnFloatingText(player.x, player.y - 20, '💔', '#ff5555', 30);
+                if (meteor) {
+                    spawnParticles(meteor.x, meteor.y, 15, meteor.glowColor, {
+                        speedMin: 30,
+                        speedMax: 180,
+                        lifeMin: 0.2,
+                        lifeMax: 0.5,
+                        sizeMin: 1.5,
+                        sizeMax: 4
+                    });
+                }
+                if (lives <= 0) {
+                    endGame();
+                }
+            }
+
+            function endGame() {
+                gameState = STATE.GAMEOVER;
+                if (score > highScore) {
+                    highScore = score;
+                    localStorage.setItem('asteroidDodgeHighScore', highScore);
+                }
+                spawnParticles(player.x, player.y, 60, '#ffaa00', {
+                    speedMin: 50,
+                    speedMax: 450,
+                    lifeMin: 0.5,
+                    lifeMax: 1.5,
+                    sizeMin: 2,
+                    sizeMax: 8
+                });
+                wrapper.classList.remove('playing', 'danger');
+            }
+
+            // ==================== 更新逻辑 ====================
+            function update(dt) {
+                // 限制最大步长防止跳帧问题
+                const cappedDt = Math.min(dt, 0.1);
+
+                // 屏幕震动
+                if (shakeDuration > 0) {
+                    shakeDuration -= cappedDt;
+                    if (shakeDuration <= 0) {
+                        shakeAmount = 0;
+                    } else {
+                        shakeAmount *= 0.85;
+                    }
+                }
+
+                if (gameState === STATE.PLAYING) {
+                    gameTime += cappedDt;
+
+                    // 难度递增
+                    const newLevel = Math.floor(score / 150) + 1;
+                    if (newLevel > level) {
+                        level = newLevel;
+                        spawnFloatingText(W / 2, H / 2, `⬆ 等级 ${level}`, '#ffdd57', 28);
+                        spawnParticles(W / 2, H / 2, 20, '#ffdd57', {
+                            speedMin: 60,
+                            speedMax: 250,
+                            lifeMin: 0.4,
+                            lifeMax: 1.0,
+                            sizeMin: 2,
+                            sizeMax: 5
+                        });
+                    }
+                    meteorSpawnInterval = Math.max(0.32, 0.9 - (level - 1) * 0.04);
+                    const meteorSpeed = 200 + level * 22;
+
+                    // 自动得分
+                    score += cappedDt * 3;
+                    difficultyScore += cappedDt * 3;
+
+                    // 更新玩家位置
+                    if (touchActive) {
+                        player.targetX = touchX;
+                    } else if (mouseOnCanvas) {
+                        player.targetX = mouseX;
+                    }
+                    if (keys['ArrowLeft'] || keys['KeyA']) {
+                        player.targetX = player.x - player.speed * cappedDt;
+                    }
+                    if (keys['ArrowRight'] || keys['KeyD']) {
+                        player.targetX = player.x + player.speed * cappedDt;
+                    }
+                    // 平滑移动
+                    const dx = player.targetX - player.x;
+                    const moveSpeed = 18;
+                    player.x += dx * Math.min(moveSpeed * cappedDt, 1);
+                    player.x = Math.max(player.collisionRadius, Math.min(W - player.collisionRadius, player.x));
+                    if (!touchActive && !mouseOnCanvas && !keys['ArrowLeft'] && !keys['KeyA'] && !keys[
+                            'ArrowRight'] && !keys['KeyD']) {
+                        player.targetX = player.x;
+                    }
+
+                    // 无敌计时器
+                    if (player.invincible) {
+                        player.invincibleTimer -= cappedDt;
+                        player.flickerTimer += cappedDt;
+                        player.visible = Math.sin(player.flickerTimer * 18) > -0.3;
+                        if (player.invincibleTimer <= 0) {
+                            player.invincible = false;
+                            player.visible = true;
+                            player.invincibleTimer = 0;
+                        }
+                    }
+
+                    // 生成陨石
+                    meteorSpawnTimer += cappedDt;
+                    const actualInterval = meteorSpawnInterval * (0.7 + Math.random() * 0.6);
+                    if (meteorSpawnTimer >= actualInterval) {
+                        meteorSpawnTimer = 0;
+                        spawnMeteor();
+                        // 偶尔一波小陨石雨
+                        if (Math.random() < 0.18 && level > 2) {
+                            const burstCount = 2 + Math.floor(Math.random() * 4);
+                            for (let i = 0; i < burstCount; i++) {
+                                setTimeout(() => {
+                                    if (gameState === STATE.PLAYING) spawnMeteor();
+                                }, i * 80 + Math.random() * 60);
+                            }
+                        }
+                    }
+
+                    // 生成金色星星
+                    starSpawnTimer += cappedDt;
+                    starSpawnInterval = 14 + Math.random() * 10;
+                    if (starSpawnTimer >= starSpawnInterval) {
+                        starSpawnTimer = 0;
+                        if (Math.random() < 0.65) {
+                            spawnGoldenStar();
+                        }
+                    }
+
+                    // 更新陨石
+                    for (let i = meteors.length - 1; i >= 0; i--) {
+                        const m = meteors[i];
+                        m.y += m.speedY * cappedDt;
+                        m.x += m.speedX * cappedDt;
+                        m.rotation += m.rotSpeed * cappedDt;
+                        // 边界反弹
+                        if (m.x - m.radius < 0) { m.x = m.radius;
+                            m.speedX = Math.abs(m.speedX); }
+                        if (m.x + m.radius > W) { m.x = W - m.radius;
+                            m.speedX = -Math.abs(m.speedX); }
+                        // 离开屏幕
+                        if (m.y > H + m.radius + 40) {
+                            if (!m.passed && !player.invincible) {
+                                combo++;
+                                comboTimer = 3.0;
+                                if (combo > maxCombo) maxCombo = combo;
+                                energy = Math.min(MAX_ENERGY, energy + 8);
+                                if (combo % 10 === 0 && combo > 0) {
+                                    spawnFloatingText(m.x, H - 20, `${combo} COMBO!`, '#ffcc00', 20 + Math.min(combo / 3,
+                                        16));
+                                }
+                            }
+                            meteors.splice(i, 1);
+                            continue;
+                        }
+                        // 碰撞检测
+                        if (!player.invincible && circlesCollide(player.x, player.y, player.collisionRadius, m.x, m.y, m
+                                .radius - 3)) {
+                            playerHit(m);
+                            const mi = meteors.indexOf(m);
+                            if (mi >= 0) meteors.splice(mi, 1);
+                        }
+                    }
+
+                    // 更新金色星星
+                    for (let i = goldenStars.length - 1; i >= 0; i--) {
+                        const s = goldenStars[i];
+                        s.y += s.speedY * cappedDt;
+                        s.x += Math.sin(gameTime * s.swingSpeed + s.swingOffset) * s.swingAmp * cappedDt;
+                        s.glowPulse += cappedDt * 3;
+                        if (s.y > H + 60) {
+                            goldenStars.splice(i, 1);
+                            continue;
+                        }
+                        if (circlesCollide(player.x, player.y, player.collisionRadius + 8, s.x, s.y, s.radius)) {
+                            score += 50;
+                            energy = Math.min(MAX_ENERGY, energy + 25);
+                            spawnParticles(s.x, s.y, 18, '#ffdd57', {
+                                speedMin: 40,
+                                speedMax: 200,
+                                lifeMin: 0.3,
+                                lifeMax: 0.7,
+                                sizeMin: 2,
+                                sizeMax: 5
+                            });
+                            spawnFloatingText(s.x, s.y, '+50 ⭐', '#ffdd57', 22);
+                            goldenStars.splice(i, 1);
+                        }
+                    }
+
+                    // combo计时器
+                    if (comboTimer > 0) {
+                        comboTimer -= cappedDt;
+                        if (comboTimer <= 0) {
+                            combo = 0;
+                            comboTimer = 0;
+                        }
+                    }
+
+                    // 更新冲击波
+                    if (shockwave) {
+                        shockwave.elapsed += cappedDt;
+                        const progress = shockwave.elapsed / shockwave.duration;
+                        shockwave.radius = shockwave.maxRadius * progress;
+                        shockwave.alpha = 1.0 - progress;
+                        if (progress >= 1.0) {
+                            shockwave = null;
+                        }
+                    }
+
+                    // 尾焰粒子
+                    if (gameState === STATE.PLAYING && player.visible) {
+                        if (Math.random() < 0.7) {
+                            particles.push({
+                                x: player.x + (Math.random() - 0.5) * 10,
+                                y: player.y + 16 + Math.random() * 8,
+                                vx: (Math.random() - 0.5) * 30,
+                                vy: -40 - Math.random() * 80,
+                                life: 0.25 + Math.random() * 0.35,
+                                maxLife: 0.6,
+                                size: 1.2 + Math.random() * 2.5,
+                                color: '#7ec8f8',
+                                hueShift: (Math.random() - 0.5) * 20,
+                                gravity: 0,
+                            });
+                        }
+                    }
+
+                } else if (gameState === STATE.GAMEOVER) {
+                    // 游戏结束仍更新粒子
+                    if (shockwave) {
+                        shockwave.elapsed += cappedDt;
+                        const progress = shockwave.elapsed / shockwave.duration;
+                        shockwave.radius = shockwave.maxRadius * progress;
+                        shockwave.alpha = 1.0 - progress;
+                        if (progress >= 1.0) shockwave = null;
+                    }
+                }
+
+                // 更新所有粒子（所有状态都更新）
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.life -= cappedDt;
+                    if (p.life <= 0) {
+                        particles.splice(i, 1);
+                        continue;
+                    }
+                    p.x += p.vx * cappedDt;
+                    p.y += p.vy * cappedDt;
+                    p.vy += p.gravity * cappedDt;
+                }
+
+                // 更新浮动文字
+                for (let i = floatingTexts.length - 1; i >= 0; i--) {
+                    const ft = floatingTexts[i];
+                    ft.life -= cappedDt;
+                    ft.y += ft.vy * cappedDt;
+                    if (ft.life <= 0) {
+                        floatingTexts.splice(i, 1);
+                    }
+                }
+
+                // 更新背景星星
+                for (const s of bgStars) {
+                    s.y += s.speed * cappedDt;
+                    s.twinkle += s.twinkleSpeed * cappedDt;
+                    if (s.y > H + 5) {
+                        s.y = -5;
+                        s.x = Math.random() * W;
+                    }
+                }
+            }
+
+            // ==================== 渲染 ====================
+            function drawBgStars() {
+                for (const s of bgStars) {
+                    const alpha = s.brightness * (0.6 + 0.4 * Math.sin(s.twinkle));
+                    ctx.fillStyle = `rgba(200,220,255,${alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function drawPlayer() {
+                if (!player.visible && player.invincible) return;
+                const px = player.x;
+                const py = player.y;
+                const alpha = player.invincible ? 0.55 : 1.0;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.translate(px, py);
+
+                // 发光光环
+                const glowGrad = ctx.createRadialGradient(0, -4, 6, 0, 0, 28);
+                glowGrad.addColorStop(0, 'rgba(130,210,255,0.7)');
+                glowGrad.addColorStop(0.5, 'rgba(60,160,240,0.3)');
+                glowGrad.addColorStop(1, 'rgba(20,80,180,0)');
+                ctx.fillStyle = glowGrad;
+                ctx.beginPath();
+                ctx.arc(0, -2, 28, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 飞船主体
+                ctx.fillStyle = '#e8f6ff';
+                ctx.beginPath();
+                ctx.moveTo(0, -20);
+                ctx.quadraticCurveTo(-13, 4, -9, 14);
+                ctx.quadraticCurveTo(-3, 16, 0, 12);
+                ctx.quadraticCurveTo(3, 16, 9, 14);
+                ctx.quadraticCurveTo(13, 4, 0, -20);
+                ctx.closePath();
+                ctx.fill();
+
+                // 内层渐变
+                const bodyGrad = ctx.createLinearGradient(0, -18, 0, 14);
+                bodyGrad.addColorStop(0, '#a0e0ff');
+                bodyGrad.addColorStop(0.3, '#4db8f0');
+                bodyGrad.addColorStop(0.7, '#1a7cc0');
+                bodyGrad.addColorStop(1, '#0d3d6e');
+                ctx.fillStyle = bodyGrad;
+                ctx.fill();
+
+                // 驾驶舱光点
+                const cockpitGrad = ctx.createRadialGradient(0, -4, 2, 0, -3, 8);
+                cockpitGrad.addColorStop(0, '#ffffff');
+                cockpitGrad.addColorStop(0.5, '#d0f0ff');
+                cockpitGrad.addColorStop(1, 'rgba(100,200,255,0)');
+                ctx.fillStyle = cockpitGrad;
+                ctx.beginPath();
+                ctx.arc(0, -4, 8, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 引擎光
+                const engineGrad = ctx.createRadialGradient(0, 10, 2, 0, 16, 10);
+                engineGrad.addColorStop(0, '#ffffff');
+                engineGrad.addColorStop(0.4, '#80d8ff');
+                engineGrad.addColorStop(1, 'rgba(30,120,220,0)');
+                ctx.fillStyle = engineGrad;
+                ctx.beginPath();
+                ctx.arc(0, 13, 10, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            function drawMeteor(m) {
+                ctx.save();
+                ctx.translate(m.x, m.y);
+                ctx.rotate(m.rotation);
+
+                // 光晕
+                const glowGrad = ctx.createRadialGradient(0, 0, m.radius * 0.5, 0, 0, m.radius * 1.5);
+                glowGrad.addColorStop(0, m.glowColor);
+                glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = glowGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, m.radius * 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 不规则形状
+                ctx.fillStyle = m.color;
+                ctx.beginPath();
+                const pts = m.shapePoints;
+                if (pts.length > 0) {
+                    const firstPt = pts[0];
+                    const fx = Math.cos(firstPt.angle) * firstPt.radius;
+                    const fy = Math.sin(firstPt.angle) * firstPt.radius;
+                    ctx.moveTo(fx, fy);
+                    for (let i = 1; i < pts.length; i++) {
+                        const pt = pts[i];
+                        const px = Math.cos(pt.angle) * pt.radius;
+                        const py = Math.sin(pt.angle) * pt.radius;
+                        ctx.lineTo(px, py);
+                    }
+                }
+                ctx.closePath();
+                ctx.fill();
+
+                // 高光
+                const highlightGrad = ctx.createRadialGradient(-m.radius * 0.2, -m.radius * 0.25, m.radius * 0.1, 0, 0, m
+                    .radius);
+                highlightGrad.addColorStop(0, 'rgba(255,255,255,0.35)');
+                highlightGrad.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+                highlightGrad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = highlightGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, m.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            function drawGoldenStar(s) {
+                ctx.save();
+                ctx.translate(s.x, s.y);
+                const pulse = 1 + 0.15 * Math.sin(s.glowPulse);
+
+                // 光晕
+                const glowGrad = ctx.createRadialGradient(0, 0, s.radius * 0.3, 0, 0, s.radius * 2.2 * pulse);
+                glowGrad.addColorStop(0, 'rgba(255,220,80,0.9)');
+                glowGrad.addColorStop(0.4, 'rgba(255,200,40,0.5)');
+                glowGrad.addColorStop(1, 'rgba(255,150,20,0)');
+                ctx.fillStyle = glowGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, s.radius * 2.2 * pulse, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 星形
+                const spikes = 5;
+                const outerR = s.radius * pulse;
+                const innerR = s.radius * 0.45 * pulse;
+                ctx.fillStyle = '#ffdd40';
+                ctx.beginPath();
+                for (let i = 0; i < spikes * 2; i++) {
+                    const r = i % 2 === 0 ? outerR : innerR;
+                    const angle = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+                    const sx = Math.cos(angle) * r;
+                    const sy = Math.sin(angle) * r;
+                    if (i === 0) ctx.moveTo(sx, sy);
+                    else ctx.lineTo(sx, sy);
+                }
+                ctx.closePath();
+                ctx.fill();
+
+                // 中心亮光
+                const centerGrad = ctx.createRadialGradient(0, 0, 1, 0, 0, s.radius * 0.7);
+                centerGrad.addColorStop(0, '#ffffff');
+                centerGrad.addColorStop(0.3, '#fffde0');
+                centerGrad.addColorStop(1, 'rgba(255,200,40,0)');
+                ctx.fillStyle = centerGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, s.radius * 0.7, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            function drawShockwave() {
+                if (!shockwave) return;
+                ctx.save();
+                ctx.globalAlpha = shockwave.alpha;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 5 * shockwave.alpha;
+                ctx.shadowColor = 'rgba(180,220,255,0.9)';
+                ctx.shadowBlur = 20 * shockwave.alpha;
+                ctx.beginPath();
+                ctx.arc(shockwave.x, shockwave.y, shockwave.radius, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                ctx.restore();
+            }
+
+            function drawParticles() {
+                for (const p of particles) {
+                    const alpha = p.life / p.maxLife;
+                    ctx.fillStyle = p.color.replace(')', `, ${alpha})`).replace('hsl',
+                        'hsla');
+                    if (p.color.startsWith('#')) {
+                        const hex = p.color;
+                        const r = parseInt(hex.slice(1, 3), 16);
+                        const g = parseInt(hex.slice(3, 5), 16);
+                        const b = parseInt(hex.slice(5, 7), 16);
+                        ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+                    }
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            function drawFloatingTexts() {
+                for (const ft of floatingTexts) {
+                    const alpha = Math.min(1, ft.life / ft.maxLife);
+                    const scale = 1 + (1 - ft.life / ft.maxLife) * 0.5;
+                    ctx.save();
+                    ctx.globalAlpha = alpha;
+                    ctx.fillStyle = ft.color;
+                    ctx.font = `bold ${ft.fontSize * scale}px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+                    ctx.shadowBlur = 6;
+                    ctx.fillText(ft.text, ft.x, ft.y);
+                    ctx.shadowBlur = 0;
+                    ctx.restore();
+                }
+            }
+
+            function drawUI() {
+                // 分数
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 22px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.textAlign = 'left';
+                ctx.shadowColor = 'rgba(0,0,0,0.6)';
+                ctx.shadowBlur = 4;
+                ctx.fillText(`⭐ ${Math.floor(score)}`, 16, 38);
+                ctx.shadowBlur = 0;
+
+                // 等级
+                ctx.fillStyle = '#ccccdd';
+                ctx.font = '14px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText(`Lv.${level}`, 16, 58);
+
+                // 生命
+                ctx.textAlign = 'right';
+                ctx.font = '20px sans-serif';
+                let heartsStr = '';
+                for (let i = 0; i < lives; i++) heartsStr += '❤️';
+                for (let i = lives; i < 3; i++) heartsStr += '🖤';
+                ctx.fillText(heartsStr, W - 16, 36);
+
+                // 最高combo
+                if (maxCombo > 0) {
+                    ctx.fillStyle = '#ffcc66';
+                    ctx.font = '12px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                    ctx.fillText(`最佳连击: ${maxCombo}`, W - 16, 56);
+                }
+
+                // 能量条
+                const energyBarX = 16;
+                const energyBarY = 66;
+                const energyBarW = 140;
+                const energyBarH = 10;
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.roundRect(energyBarX, energyBarY, energyBarW, energyBarH, 5);
+                ctx.fill();
+                const energyGrad = ctx.createLinearGradient(energyBarX, 0, energyBarX + energyBarW, 0);
+                energyGrad.addColorStop(0, '#4dc9f6');
+                energyGrad.addColorStop(0.6, '#7ee8ff');
+                energyGrad.addColorStop(1, '#c0f0ff');
+                ctx.fillStyle = energyGrad;
+                ctx.roundRect(energyBarX, energyBarY, energyBarW * (energy / MAX_ENERGY), energyBarH, 5);
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+                ctx.lineWidth = 1;
+                ctx.roundRect(energyBarX, energyBarY, energyBarW, energyBarH, 5);
+                ctx.stroke();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 10px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(energy >= MAX_ENERGY ? '🔵 空格释放!' : `能量 ${Math.floor(energy)}%`, energyBarX + energyBarW / 2,
+                    energyBarY - 4);
+
+                // combo显示
+                if (combo >= 3) {
+                    const comboAlpha = Math.min(1, comboTimer / 1.5);
+                    ctx.save();
+                    ctx.globalAlpha = comboAlpha;
+                    ctx.fillStyle = combo >= 20 ? '#ff8844' : combo >= 10 ? '#ffbb33' : '#ffdd66';
+                    const comboSize = 18 + Math.min(combo, 30) * 0.6;
+                    ctx.font = `bold ${comboSize}px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.shadowColor = 'rgba(255,150,30,0.7)';
+                    ctx.shadowBlur = 10;
+                    ctx.fillText(`🔥 ${combo} COMBO`, W / 2, H - 30);
+                    ctx.shadowBlur = 0;
+                    ctx.restore();
+                }
+
+                // 技能按钮（移动端可见）
+                const btnAlpha = energy >= MAX_ENERGY ? 1.0 : 0.5;
+                ctx.save();
+                ctx.globalAlpha = btnAlpha;
+                const btnGrad = ctx.createRadialGradient(skillBtn.x, skillBtn.y, skillBtn.radius * 0.2,
+                    skillBtn.x, skillBtn.y, skillBtn.radius);
+                btnGrad.addColorStop(0, energy >= MAX_ENERGY ? '#ffffff' : '#8899bb');
+                btnGrad.addColorStop(0.5, energy >= MAX_ENERGY ? '#7ec8ff' : '#556688');
+                btnGrad.addColorStop(1, energy >= MAX_ENERGY ? '#3a80c0' : '#334466');
+                ctx.fillStyle = btnGrad;
+                ctx.beginPath();
+                ctx.arc(skillBtn.x, skillBtn.y, skillBtn.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = energy >= MAX_ENERGY ? '#c0e8ff' : '#667788';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 13px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('⚡', skillBtn.x, skillBtn.y + 5);
+                ctx.restore();
+            }
+
+            function drawMenu() {
+                // 半透明遮罩
+                ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                ctx.fillRect(0, 0, W, H);
+
+                // 标题
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 42px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.textAlign = 'center';
+                ctx.shadowColor = 'rgba(100,180,255,0.8)';
+                ctx.shadowBlur = 20;
+                ctx.fillText('🚀 星际穿梭', W / 2, 200);
+                ctx.shadowBlur = 0;
+
+                ctx.fillStyle = '#ccddee';
+                ctx.font = '16px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText('躲避小行星，收集金色星星', W / 2, 245);
+
+                // 操作说明
+                const instructions = [
+                    '🖱️ 鼠标/触摸 或 ⌨️ 方向键 移动',
+                    '🔵 收集能量，按 空格 释放清屏',
+                    '⭐ 吃到星星 +50分 +25能量',
+                    '💔 你有 3 条命',
+                ];
+                ctx.fillStyle = '#aabbcc';
+                ctx.font = '14px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                instructions.forEach((txt, i) => {
+                    ctx.fillText(txt, W / 2, 300 + i * 28);
+                });
+
+                if (highScore > 0) {
+                    ctx.fillStyle = '#ffdd66';
+                    ctx.font = 'bold 18px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                    ctx.fillText(`🏆 最高分: ${Math.floor(highScore)}`, W / 2, 430);
+                }
+
+                // 开始按钮
+                const btnX = W / 2;
+                const btnY = 510;
+                const btnW = 180;
+                const btnH = 55;
+                const btnGrad = ctx.createLinearGradient(btnX - btnW / 2, btnY, btnX + btnW / 2, btnY);
+                btnGrad.addColorStop(0, '#3a90d0');
+                btnGrad.addColorStop(0.5, '#5ab8f0');
+                btnGrad.addColorStop(1, '#3a90d0');
+                ctx.fillStyle = btnGrad;
+                ctx.beginPath();
+                ctx.roundRect(btnX - btnW / 2, btnY - btnH / 2, btnW, btnH, 28);
+                ctx.fill();
+                ctx.strokeStyle = '#a0d8ff';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 22px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText('🎮 开始游戏', btnX, btnY + 8);
+
+                // 存储按钮引用用于点击检测
+                return { btnX, btnY, btnW, btnH };
+            }
+
+            let menuBtn = null;
+
+            function drawGameOver() {
+                ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                ctx.fillRect(0, 0, W, H);
+
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 38px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('游戏结束', W / 2, 230);
+
+                ctx.fillStyle = '#ffdd66';
+                ctx.font = 'bold 26px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText(`得分: ${Math.floor(score)}`, W / 2, 290);
+
+                if (score >= highScore && score > 0) {
+                    ctx.fillStyle = '#ff8844';
+                    ctx.font = 'bold 20px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                    ctx.fillText('🏆 新纪录! 🏆', W / 2, 325);
+                } else {
+                    ctx.fillStyle = '#ccddee';
+                    ctx.font = '16px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                    ctx.fillText(`最高分: ${Math.floor(highScore)}`, W / 2, 325);
+                }
+
+                ctx.fillStyle = '#ccddee';
+                ctx.font = '16px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText(`等级: ${level} | 最佳连击: ${maxCombo}`, W / 2, 355);
+
+                // 重新开始按钮
+                const btnX = W / 2;
+                const btnY = 430;
+                const btnW = 180;
+                const btnH = 55;
+                const btnGrad = ctx.createLinearGradient(btnX - btnW / 2, btnY, btnX + btnW / 2, btnY);
+                btnGrad.addColorStop(0, '#e05540');
+                btnGrad.addColorStop(0.5, '#f07060');
+                btnGrad.addColorStop(1, '#e05540');
+                ctx.fillStyle = btnGrad;
+                ctx.beginPath();
+                ctx.roundRect(btnX - btnW / 2, btnY - btnH / 2, btnW, btnH, 28);
+                ctx.fill();
+                ctx.strokeStyle = '#ffaa99';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 22px "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif';
+                ctx.fillText('🔄 再来一次', btnX, btnY + 8);
+
+                return { btnX, btnY, btnW, btnH };
+            }
+
+            let gameOverBtn = null;
+
+            function render() {
+                ctx.clearRect(0, 0, W, H);
+
+                // 震动偏移
+                let shakeX = 0;
+                let shakeY = 0;
+                if (shakeAmount > 0.3) {
+                    shakeX = (Math.random() - 0.5) * shakeAmount * 2;
+                    shakeY = (Math.random() - 0.5) * shakeAmount * 2;
+                }
+
+                ctx.save();
+                ctx.translate(shakeX, shakeY);
+
+                // 背景渐变
+                const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+                bgGrad.addColorStop(0, '#05051a');
+                bgGrad.addColorStop(0.5, '#0a0f2e');
+                bgGrad.addColorStop(1, '#0d1035');
+                ctx.fillStyle = bgGrad;
+                ctx.fillRect(-10, -10, W + 20, H + 20);
+
+                // 背景星星
+                drawBgStars();
+
+                // 冲击波
+                drawShockwave();
+
+                // 金色星星
+                for (const s of goldenStars) {
+                    drawGoldenStar(s);
+                }
+
+                // 陨石
+                for (const m of meteors) {
+                    drawMeteor(m);
+                }
+
+                // 玩家
+                if (gameState === STATE.PLAYING || gameState === STATE.GAMEOVER) {
+                    if (gameState === STATE.GAMEOVER) {
+                        // 游戏结束也画玩家（最后位置）
+                        ctx.globalAlpha = 0.4;
+                        drawPlayer();
+                        ctx.globalAlpha = 1;
+                    } else {
+                        drawPlayer();
+                    }
+                }
+
+                // 粒子
+                drawParticles();
+                drawFloatingTexts();
+
+                ctx.restore();
+
+                // UI（不受震动影响）
+                if (gameState === STATE.PLAYING) {
+                    drawUI();
+                }
+
+                // 菜单/结束画面
+                if (gameState === STATE.MENU) {
+                    menuBtn = drawMenu();
+                } else if (gameState === STATE.GAMEOVER) {
+                    gameOverBtn = drawGameOver();
+                }
+            }
+
+            // ==================== 游戏循环 ====================
+            let lastTime = performance.now();
+
+            function gameLoop(timestamp) {
+                const dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+                lastTime = timestamp;
+
+                update(dt);
+                render();
+
+                requestAnimationFrame(gameLoop);
+            }
+
+            // ==================== 事件处理 ====================
+            function getCanvasPos(e) {
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = W / rect.width;
+                const scaleY = H / rect.height;
+                return {
+                    x: (e.clientX - rect.left) * scaleX,
+                    y: (e.clientY - rect.top) * scaleY,
+                };
+            }
+
+            function isInRect(pos, btn) {
+                if (!btn) return false;
+                return pos.x >= btn.btnX - btn.btnW / 2 &&
+                    pos.x <= btn.btnX + btn.btnW / 2 &&
+                    pos.y >= btn.btnY - btn.btnH / 2 &&
+                    pos.y <= btn.btnY + btn.btnH / 2;
+            }
+
+            function isInCircle(pos, cx, cy, r) {
+                const dx = pos.x - cx;
+                const dy = pos.y - cy;
+                return Math.sqrt(dx * dx + dy * dy) < r;
+            }
+
+            canvas.addEventListener('mousemove', (e) => {
+                const pos = getCanvasPos(e);
+                mouseX = pos.x;
+                mouseOnCanvas = true;
+                if (gameState === STATE.PLAYING) {
+                    player.targetX = mouseX;
+                }
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                mouseOnCanvas = false;
+            });
+
+            canvas.addEventListener('click', (e) => {
+                const pos = getCanvasPos(e);
+                if (gameState === STATE.MENU && menuBtn && isInRect(pos, menuBtn)) {
+                    resetGame();
+                    gameState = STATE.PLAYING;
+                    wrapper.classList.add('playing');
+                    menuBtn = null;
+                    return;
+                }
+                if (gameState === STATE.GAMEOVER && gameOverBtn && isInRect(pos, gameOverBtn)) {
+                    resetGame();
+                    gameState = STATE.PLAYING;
+                    wrapper.classList.add('playing');
+                    gameOverBtn = null;
+                    return;
+                }
+                if (gameState === STATE.PLAYING && isInCircle(pos, skillBtn.x, skillBtn.y, skillBtn.radius)) {
+                    activateShockwave();
+                }
+            });
+
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (e.touches.length > 0) {
+                    const pos = getCanvasPos(e.touches[0]);
+                    touchX = pos.x;
+                    touchActive = true;
+                    if (gameState === STATE.PLAYING) {
+                        player.targetX = touchX;
+                        if (isInCircle(pos, skillBtn.x, skillBtn.y, skillBtn.radius)) {
+                            activateShockwave();
+                        }
+                    }
+                    // 模拟点击按钮
+                    if (gameState === STATE.MENU && menuBtn && isInRect(pos, menuBtn)) {
+                        resetGame();
+                        gameState = STATE.PLAYING;
+                        wrapper.classList.add('playing');
+                        menuBtn = null;
+                    }
+                    if (gameState === STATE.GAMEOVER && gameOverBtn && isInRect(pos, gameOverBtn)) {
+                        resetGame();
+                        gameState = STATE.PLAYING;
+                        wrapper.classList.add('playing');
+                        gameOverBtn = null;
+                    }
+                }
+            }, { passive: false });
+
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (e.touches.length > 0) {
+                    const pos = getCanvasPos(e.touches[0]);
+                    touchX = pos.x;
+                    if (gameState === STATE.PLAYING) {
+                        player.targetX = touchX;
+                    }
+                }
+            }, { passive: false });
+
+            canvas.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                touchActive = false;
+            }, { passive: false });
+
+            document.addEventListener('keydown', (e) => {
+                keys[e.code] = true;
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    if (gameState === STATE.PLAYING) {
+                        activateShockwave();
+                    }
+                }
+                if (e.code === 'Enter' || e.code === 'KeyF') {
+                    e.preventDefault();
+                    if (gameState === STATE.MENU) {
+                        resetGame();
+                        gameState = STATE.PLAYING;
+                        wrapper.classList.add('playing');
+                        menuBtn = null;
+                    } else if (gameState === STATE.GAMEOVER) {
+                        resetGame();
+                        gameState = STATE.PLAYING;
+                        wrapper.classList.add('playing');
+                        gameOverBtn = null;
+                    }
+                }
+            });
+
+            document.addEventListener('keyup', (e) => {
+                keys[e.code] = false;
+            });
+
+            // 窗口大小变化时更新技能按钮位置
+            function updateSkillBtnPosition() {
+                skillBtn.x = W - 65;
+                skillBtn.y = H - 75;
+            }
+            updateSkillBtnPosition();
+
+            // ==================== 启动 ====================
+            initBgStars();
+            resetGame();
+            gameState = STATE.MENU;
+            lastTime = performance.now();
+            requestAnimationFrame(gameLoop);
+
+            console.log('🚀 星际穿梭游戏已就绪！');
+            console.log('   - 鼠标/触摸移动飞船');
+            console.log('   - 键盘方向键/A D 移动');
+            console.log('   - 空格键释放清屏技能');
+            console.log('   - 收集金色星星获得额外分数');
+            console.log('   - 3条命，躲避小行星！');
+            console.log('   💡 支持移动端触摸操作');
+        })();
+    </script>
+</body>
+</html>
